@@ -37,12 +37,18 @@ A Chrome extension that enhances ChatGPT's read-aloud feature with a custom audi
 
 ## 🛠️ **Installation**
 
-### Development Installation
+### From Chrome Web Store
+
+1. Visit the [Chrome Web Store](https://chromewebstore.google.com/detail/chatgpt-read-aloud-with-controls/bgilonanhcpkjfeldiaalcnmilafljac)
+2. Click "Add to Chrome"
+3. Click "Add Extension" in the popup
+
+### From Source
 
 1. **Clone the repository**:
 
    ```bash
-   git clone https://github.com/yourusername/chatgpt-readaloud-with-controls-chrome-extension.git
+   git clone https://github.com/YossiSaadi/chatgpt-readaloud-with-controls-chrome-extension.git
    cd chatgpt-readaloud-with-controls-chrome-extension
    ```
 
@@ -62,12 +68,6 @@ A Chrome extension that enhances ChatGPT's read-aloud feature with a custom audi
    - Open Chrome and navigate to `chrome://extensions/`
    - Enable "Developer mode" (toggle in top-right)
    - Click "Load unpacked" and select the `dist` folder
-
-### Production Installation
-
-1. Download the latest release from the [Releases page](https://github.com/yourusername/chatgpt-readaloud-with-controls-chrome-extension/releases)
-2. Unzip the downloaded file
-3. Follow step 4 from the development installation above
 
 ## 🎮 **Usage Guide**
 
@@ -269,6 +269,7 @@ This extension requests host permission for `https://chatgpt.com/*` to enable it
 **Why is this permission necessary?**
 
 Chrome extensions require explicit host permissions to:
+
 - Inject content scripts into web pages
 - Access DOM elements (like audio players and buttons)
 - Modify page appearance (showing the floating player)
@@ -319,7 +320,7 @@ The permission is strictly limited to `chatgpt.com` - the extension has no acces
 
 ## 🤝 **Contributing**
 
-We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.md) for details.
+We welcome contributions!
 
 ### Development Setup
 
@@ -347,6 +348,6 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ## 📞 **Support**
 
-- **Issues**: [GitHub Issues](https://github.com/yourusername/chatgpt-readaloud-with-controls-chrome-extension/issues)
+- **Issues**: [GitHub Issues](https://github.com/YossiSaadi/chatgpt-readaloud-with-controls-chrome-extension/issues)
 - **Feature Requests**: Use GitHub Issues with the "enhancement" label
 - **Questions**: Start a GitHub Discussion
