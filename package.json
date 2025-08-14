@@ -1,0 +1,32 @@
+{
+  "name": "chatgpt-readaloud-with-controls-chrome-extension",
+  "version": "1.0.0",
+  "description": "Custom audio player controls for ChatGPT's read-aloud feature",
+  "repository": {
+    "type": "git",
+    "url": "git@github.com:YossiSaadi/chatgpt-readaloud-with-controls-chrome-extension.git"
+  },
+  "main": "index.js",
+  "scripts": {
+    "dev": "vite build --watch",
+    "clean": "rm -rf dist",
+    "build": "yarn clean && vite build",
+    "build:zip": "yarn build && zip -r chatgpt-readaloud-with-controls-chrome-extension.zip dist",
+    "lint": "eslint src/**/*.ts"
+  },
+  "keywords": ["chrome-extension", "chatgpt", "audio", "read-aloud", "controls"],
+  "author": "YossiSaadi",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/chrome": "^0.0.283",
+    "@types/node": "^22.9.1",
+    "@typescript-eslint/eslint-plugin": "^8.15.0",
+    "@typescript-eslint/parser": "^8.15.0",
+    "eslint": "^8.57.1",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.3.3",
+    "rollup-plugin-copy": "^3.5.0",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}
