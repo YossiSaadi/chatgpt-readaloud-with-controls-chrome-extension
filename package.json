@@ -1,6 +1,6 @@
 {
   "name": "chatgpt-readaloud-with-controls-chrome-extension",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Custom audio player controls for ChatGPT's read-aloud feature",
   "repository": {
     "type": "git",

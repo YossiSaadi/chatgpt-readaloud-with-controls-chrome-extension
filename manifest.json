@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ChatGPT Read Aloud with Controls",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Custom audio player controls for ChatGPT's read-aloud feature",
   "permissions": ["webRequest"],
   "host_permissions": ["https://chatgpt.com/*"],

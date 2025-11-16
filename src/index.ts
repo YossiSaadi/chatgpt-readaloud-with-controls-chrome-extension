@@ -540,6 +540,24 @@ class ChatGPTReadAloudController {
                   </svg>
                 </button>
                 <ul class="speed-dropdown" role="listbox" aria-label="Playback speed options">
+                  <li class="speed-option" role="option" data-speed="0.25" aria-selected="false" tabindex="0">
+                    <span>0.25x</span>
+                    <svg class="check-icon" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                      <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+                    </svg>
+                  </li>
+                  <li class="speed-option" role="option" data-speed="0.5" aria-selected="false" tabindex="0">
+                    <span>0.5x</span>
+                    <svg class="check-icon" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                      <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+                    </svg>
+                  </li>
+                  <li class="speed-option" role="option" data-speed="0.75" aria-selected="false" tabindex="0">
+                    <span>0.75x</span>
+                    <svg class="check-icon" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                      <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+                    </svg>
+                  </li>
                   <li class="speed-option selected" role="option" data-speed="1.0" aria-selected="true" tabindex="0">
                     <span>1.0x</span>
                     <svg class="check-icon" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
