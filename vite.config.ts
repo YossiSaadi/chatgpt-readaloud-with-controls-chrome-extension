@@ -6,7 +6,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         index: 'src/index.ts',
-        background: 'src/background.ts',
+        interceptor: 'src/interceptor.ts',
       },
       output: {
         entryFileNames: '[name].js',
