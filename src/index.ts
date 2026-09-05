@@ -29,6 +29,22 @@ const MESSAGE_SOURCE = 'chatgpt-read-aloud-controls';
 const AUDIO_ELEMENT_ID = 'chatgpt-read-aloud-controls-audio';
 const FIND_AUDIO_MAX_ATTEMPTS = 40; // × 500ms = 20s before giving up
 
+// Persisted player geometry (per browser, via localStorage)
+const GEOMETRY_STORAGE_KEY = 'chatgpt-read-aloud-controls:geometry';
+const PLAYER_MIN_WIDTH = 320;
+const PLAYER_MAX_WIDTH = 720;
+
+// Selector for the native Read Aloud control, which now lives inside the
+// "More actions" dropdown as a menu item.
+const VOICE_ACTION_SELECTOR = 'button[data-testid="voice-play-turn-action-button"]';
+const INLINE_BUTTON_CLASS = 'chatgpt-ra-inline-button';
+
+interface PlayerGeometry {
+  left?: number;
+  top?: number;
+  width?: number;
+}
+
 class ChatGPTReadAloudController {
   private audioPlayer: HTMLAudioElement | null = null;
   private playerUI: HTMLElement | null = null;
@@ -50,6 +66,7 @@ class ChatGPTReadAloudController {
   private pendingRequestId: string | null = null;
   private findAudioAttempts = 0;
   private pollIntervalId: number | null = null;
+  private inlineButtonScanQueued = false;
 
   constructor() {
     console.log('[ChatGPT Read Aloud Controller]: Initializing extension');
@@ -57,6 +74,7 @@ class ChatGPTReadAloudController {
     this.setupMessageListener();
     this.observeConversationChanges();
     this.createPlayerUI(); // Player is always present
+    this.observeAssistantTurns(); // Inject inline "Listen" buttons
     this.updateCurrentConversationId();
     console.log('[ChatGPT Read Aloud Controller]: Initialization complete');
   }
@@ -333,6 +351,111 @@ class ChatGPTReadAloudController {
     return match ? match[1] : null;
   }
 
+  // ---------------------------------------------------------------------------
+  // Inline "Listen" button
+  //
+  // ChatGPT moved its Read Aloud control into the "More actions" (⋯) dropdown,
+  // so it takes two clicks to start playback. We inject a one-click "Listen"
+  // button directly into each assistant turn's action bar. It works by driving
+  // the native control: open the ⋯ menu, click the Read Aloud item, done. That
+  // fires the /backend-api/synthesize request our interceptor already handles.
+  // ---------------------------------------------------------------------------
+
+  private observeAssistantTurns(): void {
+    if (!document.body) {
+      setTimeout(() => this.observeAssistantTurns(), 100);
+      return;
+    }
+
+    // Coalesce mutation bursts into a single scan per animation frame so we
+    // never run querySelectorAll on every mutation during ChatGPT's hydration.
+    const observer = new MutationObserver(() => this.queueInlineButtonScan());
+    observer.observe(document.body, { childList: true, subtree: true });
+    this.scanForAssistantTurns();
+    console.log('[ChatGPT Read Aloud Controller]: Assistant-turn observer started');
+  }
+
+  private queueInlineButtonScan(): void {
+    if (this.inlineButtonScanQueued) return;
+    this.inlineButtonScanQueued = true;
+    requestAnimationFrame(() => {
+      this.inlineButtonScanQueued = false;
+      this.scanForAssistantTurns();
+    });
+  }
+
+  private scanForAssistantTurns(): void {
+    const copyButtons = document.querySelectorAll(
+      '[data-turn="assistant"] button[data-testid="copy-turn-action-button"]',
+    );
+    copyButtons.forEach((copyButton) => {
+      const actionBar = copyButton.parentElement;
+      if (!actionBar) return;
+      if (actionBar.querySelector(`.${INLINE_BUTTON_CLASS}`)) return; // already injected
+      const turn = copyButton.closest('[data-turn="assistant"]') as HTMLElement | null;
+      if (!turn) return;
+      this.injectInlineButton(actionBar, copyButton as HTMLElement, turn);
+    });
+  }
+
+  private injectInlineButton(
+    actionBar: HTMLElement,
+    beforeButton: HTMLElement,
+    turn: HTMLElement,
+  ): void {
+    const button = document.createElement('button');
+    button.className = INLINE_BUTTON_CLASS;
+    button.type = 'button';
+    button.setAttribute('aria-label', 'Read aloud with controls');
+    button.title = 'Read aloud with controls';
+    button.innerHTML = `
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/>
+      </svg>
+      <span>Listen</span>
+    `;
+    button.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.triggerReadAloudForTurn(turn);
+    });
+    actionBar.insertBefore(button, beforeButton);
+  }
+
+  private triggerReadAloudForTurn(turn: HTMLElement): void {
+    // Already an inline control in the menu? Open it and click Read Aloud.
+    const moreButton = [...turn.querySelectorAll('button')].find(
+      (b) => b.getAttribute('aria-label') === 'More actions',
+    ) as HTMLButtonElement | undefined;
+
+    if (!moreButton) {
+      console.log('[ChatGPT Read Aloud Controller]: No "More actions" button on this turn');
+      return;
+    }
+
+    moreButton.click(); // opens the Radix dropdown
+
+    // The menu item mounts asynchronously; poll briefly for it.
+    let attempts = 0;
+    const findAndClick = (): void => {
+      const menuItem = document.querySelector(
+        `[role="menuitem"]${VOICE_ACTION_SELECTOR.replace('button', '')}`,
+      ) as HTMLElement | null;
+      if (menuItem) {
+        menuItem.click();
+        // Close the menu (Radix leaves it open until focus/escape)
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        return;
+      }
+      if (++attempts >= 20) {
+        console.log('[ChatGPT Read Aloud Controller]: Read Aloud menu item never appeared');
+        return;
+      }
+      setTimeout(findAndClick, 50);
+    };
+    setTimeout(findAndClick, 50);
+  }
+
   private createPlayerUI(): void {
     // Check if player already exists in DOM
     const existingPlayer = document.getElementById('custom-chatgpt-audio-player');
@@ -471,6 +594,11 @@ class ChatGPTReadAloudController {
             </svg>
             <span class="error-text">Failed to load audio from OpenAI</span>
           </div>
+          <div class="loading-indicator" style="display: none;" aria-live="polite">
+            <span class="loading-spinner" aria-hidden="true"></span>
+            <span class="loading-text">Loading audio from OpenAI…</span>
+          </div>
+          <div class="resize-handle" aria-hidden="true" title="Drag to resize"></div>
         </div>
       </div>
     `;
@@ -490,7 +618,10 @@ class ChatGPTReadAloudController {
         color: white;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         z-index: 10000;
-        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        /* Only fade/slide the entry animation — left/top/width change instantly
+           so dragging and resizing feel direct, not laggy. */
+        transition: opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+                    transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         backdrop-filter: blur(8px);
         opacity: 0;
         pointer-events: none;
@@ -499,8 +630,103 @@ class ChatGPTReadAloudController {
       #custom-chatgpt-audio-player.visible {
         transform: translateX(-50%) translateY(0);
         opacity: 1;
-        width: 500px;
+        width: 440px;
         pointer-events: auto;
+      }
+
+      /* Once the user has dragged/resized, position is explicit (inline left/top/
+         width) and the centering transform must be dropped. */
+      #custom-chatgpt-audio-player.positioned,
+      #custom-chatgpt-audio-player.visible.positioned {
+        transform: none;
+      }
+
+      .player-container {
+        position: relative;
+      }
+
+      /* Header doubles as the drag handle */
+      .player-header {
+        cursor: grab;
+        user-select: none;
+      }
+
+      #custom-chatgpt-audio-player.dragging .player-header {
+        cursor: grabbing;
+      }
+
+      /* Interactive controls in the header shouldn't start a drag */
+      .player-header .speed-selector,
+      .player-header .close-button {
+        cursor: pointer;
+      }
+
+      .resize-handle {
+        position: absolute;
+        right: 2px;
+        bottom: 2px;
+        width: 16px;
+        height: 16px;
+        cursor: nwse-resize;
+        opacity: 0.5;
+        transition: opacity 0.2s;
+        background:
+          linear-gradient(135deg, transparent 0 45%, rgba(255,255,255,0.6) 45% 55%, transparent 55% 100%),
+          linear-gradient(135deg, transparent 0 70%, rgba(255,255,255,0.6) 70% 80%, transparent 80% 100%);
+      }
+
+      .resize-handle:hover {
+        opacity: 1;
+      }
+
+      #custom-chatgpt-audio-player.disabled .resize-handle {
+        opacity: 0.25;
+        pointer-events: none;
+      }
+
+      .loading-indicator {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        padding: 10px 12px;
+        color: #cbd5e1;
+        font-size: 13px;
+      }
+
+      .loading-spinner {
+        width: 16px;
+        height: 16px;
+        border: 2px solid rgba(255, 255, 255, 0.25);
+        border-top-color: #10a37f;
+        border-radius: 50%;
+        animation: chatgpt-ra-spin 0.8s linear infinite;
+        flex-shrink: 0;
+      }
+
+      @keyframes chatgpt-ra-spin {
+        to { transform: rotate(360deg); }
+      }
+
+      /* Inline "Listen" button injected into each assistant turn's action bar */
+      .${INLINE_BUTTON_CLASS} {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        background: transparent;
+        border: none;
+        color: inherit;
+        cursor: pointer;
+        border-radius: 6px;
+        padding: 4px 6px;
+        font-size: 12px;
+        opacity: 0.75;
+        transition: opacity 0.15s, background-color 0.15s;
+      }
+
+      .${INLINE_BUTTON_CLASS}:hover {
+        opacity: 1;
+        background: rgba(127, 127, 127, 0.15);
       }
 
       #custom-chatgpt-audio-player.disabled {
@@ -924,16 +1150,25 @@ class ChatGPTReadAloudController {
   private updatePlayerContent(): void {
     if (!this.playerUI) return;
 
-    const mainControls = this.playerUI.querySelector('.main-controls');
-    const progressContainer = this.playerUI.querySelector('.progress-container');
-    const volumeContainer = this.playerUI.querySelector('.volume-container');
-    const errorMessage = this.playerUI.querySelector('.error-message');
+    const mainControls = this.playerUI.querySelector('.main-controls') as HTMLElement | null;
+    const progressContainer = this.playerUI.querySelector('.progress-container') as HTMLElement | null;
+    const volumeContainer = this.playerUI.querySelector('.volume-container') as HTMLElement | null;
+    const errorMessage = this.playerUI.querySelector('.error-message') as HTMLElement | null;
+    const loadingIndicator = this.playerUI.querySelector('.loading-indicator') as HTMLElement | null;
+
+    // Loading is the window between the request and the audio being playable —
+    // shown while the player is still in its disabled state or before duration
+    // is known, so the user knows the (OpenAI-dependent) fetch is in progress.
+    const isLoading =
+      !this.currentState.hasError &&
+      (this.playerUI.classList.contains('disabled') || this.currentState.isLoading);
 
     if (this.currentState.hasError) {
       // Show error, hide controls
       if (mainControls) mainControls.style.display = 'none';
       if (progressContainer) progressContainer.style.display = 'none';
       if (volumeContainer) volumeContainer.style.display = 'none';
+      if (loadingIndicator) loadingIndicator.style.display = 'none';
       if (errorMessage) {
         errorMessage.style.display = 'flex';
         const errorText = errorMessage.querySelector('.error-text');
@@ -947,6 +1182,7 @@ class ChatGPTReadAloudController {
       if (progressContainer) progressContainer.style.display = 'block';
       if (volumeContainer) volumeContainer.style.display = 'flex';
       if (errorMessage) errorMessage.style.display = 'none';
+      if (loadingIndicator) loadingIndicator.style.display = isLoading ? 'flex' : 'none';
     }
   }
 
@@ -1004,6 +1240,142 @@ class ChatGPTReadAloudController {
         this.setPlaybackSpeed(speed);
       });
     });
+
+    // Draggable / resizable window + restore any saved geometry
+    this.makePlayerDraggable();
+    this.makePlayerResizable();
+    this.restorePlayerGeometry();
+  }
+
+  private makePlayerDraggable(): void {
+    if (!this.playerUI) return;
+    const header = this.playerUI.querySelector('.player-header') as HTMLElement | null;
+    if (!header) return;
+
+    let startX = 0;
+    let startY = 0;
+    let startLeft = 0;
+    let startTop = 0;
+
+    const onMouseMove = (e: MouseEvent): void => {
+      if (!this.playerUI) return;
+      const left = startLeft + (e.clientX - startX);
+      const top = startTop + (e.clientY - startY);
+      // Keep the player within the viewport
+      const rect = this.playerUI.getBoundingClientRect();
+      const maxLeft = window.innerWidth - rect.width;
+      const maxTop = window.innerHeight - rect.height;
+      const clampedLeft = Math.max(0, Math.min(left, Math.max(0, maxLeft)));
+      const clampedTop = Math.max(0, Math.min(top, Math.max(0, maxTop)));
+      this.playerUI.style.left = `${clampedLeft}px`;
+      this.playerUI.style.top = `${clampedTop}px`;
+    };
+
+    const onMouseUp = (): void => {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      this.playerUI?.classList.remove('dragging');
+      this.savePlayerGeometry();
+    };
+
+    header.addEventListener('mousedown', (e) => {
+      const mouseEvent = e as MouseEvent;
+      // Ignore drags that start on interactive header controls
+      const target = mouseEvent.target as HTMLElement;
+      if (target.closest('button, .speed-selector, input')) return;
+      if (!this.playerUI || this.playerUI.classList.contains('disabled')) return;
+
+      const rect = this.playerUI.getBoundingClientRect();
+      // Switch from centering transform to explicit positioning on first drag
+      this.playerUI.classList.add('positioned', 'dragging');
+      this.playerUI.style.left = `${rect.left}px`;
+      this.playerUI.style.top = `${rect.top}px`;
+      startX = mouseEvent.clientX;
+      startY = mouseEvent.clientY;
+      startLeft = rect.left;
+      startTop = rect.top;
+      mouseEvent.preventDefault();
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+    });
+  }
+
+  private makePlayerResizable(): void {
+    if (!this.playerUI) return;
+    const handle = this.playerUI.querySelector('.resize-handle') as HTMLElement | null;
+    if (!handle) return;
+
+    let startX = 0;
+    let startWidth = 0;
+
+    const onMouseMove = (e: MouseEvent): void => {
+      if (!this.playerUI) return;
+      const width = startWidth + (e.clientX - startX);
+      const clamped = Math.max(PLAYER_MIN_WIDTH, Math.min(width, PLAYER_MAX_WIDTH));
+      this.playerUI.style.width = `${clamped}px`;
+    };
+
+    const onMouseUp = (): void => {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      this.savePlayerGeometry();
+    };
+
+    handle.addEventListener('mousedown', (e) => {
+      const mouseEvent = e as MouseEvent;
+      if (!this.playerUI || this.playerUI.classList.contains('disabled')) return;
+      const rect = this.playerUI.getBoundingClientRect();
+      startX = mouseEvent.clientX;
+      startWidth = rect.width;
+      mouseEvent.preventDefault();
+      mouseEvent.stopPropagation();
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+    });
+  }
+
+  private savePlayerGeometry(): void {
+    if (!this.playerUI) return;
+    try {
+      const geometry: PlayerGeometry = {};
+      if (this.playerUI.classList.contains('positioned')) {
+        geometry.left = parseFloat(this.playerUI.style.left) || 0;
+        geometry.top = parseFloat(this.playerUI.style.top) || 0;
+      }
+      if (this.playerUI.style.width) {
+        geometry.width = parseFloat(this.playerUI.style.width) || undefined;
+      }
+      localStorage.setItem(GEOMETRY_STORAGE_KEY, JSON.stringify(geometry));
+    } catch {
+      // localStorage may be unavailable (private mode, blocked); position just
+      // won't persist, which is a harmless degradation.
+    }
+  }
+
+  private restorePlayerGeometry(): void {
+    if (!this.playerUI) return;
+    let geometry: PlayerGeometry | null = null;
+    try {
+      const raw = localStorage.getItem(GEOMETRY_STORAGE_KEY);
+      if (raw) geometry = JSON.parse(raw) as PlayerGeometry;
+    } catch {
+      geometry = null;
+    }
+    if (!geometry) return;
+
+    if (typeof geometry.width === 'number') {
+      const clamped = Math.max(PLAYER_MIN_WIDTH, Math.min(geometry.width, PLAYER_MAX_WIDTH));
+      this.playerUI.style.width = `${clamped}px`;
+    }
+    if (typeof geometry.left === 'number' && typeof geometry.top === 'number') {
+      // Clamp to the current viewport in case it shrank since last session
+      const width = geometry.width || this.playerUI.getBoundingClientRect().width || 440;
+      const left = Math.max(0, Math.min(geometry.left, Math.max(0, window.innerWidth - width)));
+      const top = Math.max(0, Math.min(geometry.top, Math.max(0, window.innerHeight - 60)));
+      this.playerUI.classList.add('positioned');
+      this.playerUI.style.left = `${left}px`;
+      this.playerUI.style.top = `${top}px`;
+    }
   }
 
   private showPlayer(): void {
@@ -1022,7 +1394,10 @@ class ChatGPTReadAloudController {
       this.playerUI.classList.add('visible', 'disabled');
       this.playerUI.classList.remove('hidden');
       console.log('[ChatGPT Read Aloud Controller]: Showing player disabled with animation');
-      
+
+      // Surface the loading indicator while we wait for the audio
+      this.updatePlayerContent();
+
       // Focus the play button for accessibility (even when disabled)
       this.focusPlayButton();
     }
