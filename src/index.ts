@@ -48,7 +48,6 @@ interface PlayerGeometry {
 class ChatGPTReadAloudController {
   private audioPlayer: HTMLAudioElement | null = null;
   private playerUI: HTMLElement | null = null;
-  private currentAudioSrc: string | null = null;
   private currentState: AudioPlayerState = {
     isPlaying: false,
     currentTime: 0,
@@ -145,7 +144,6 @@ class ChatGPTReadAloudController {
 
     // Store reference to the original audio without modifying it
     this.audioPlayer = originalAudio;
-    this.currentAudioSrc = originalAudio.src || originalAudio.currentSrc;
 
     // Reset state for new audio
     this.currentState.hasError = false;
@@ -179,9 +177,6 @@ class ChatGPTReadAloudController {
     if (!this.audioPlayer) return;
 
     console.log('[ChatGPT Read Aloud Controller]: Setting up non-destructive audio monitoring');
-
-    // Monitor the audio element without disrupting ChatGPT's listeners
-    const originalSrc = this.audioPlayer.src;
 
     // Set up a polling mechanism to track audio state
     this.startAudioStatePolling();
@@ -1189,6 +1184,11 @@ class ChatGPTReadAloudController {
   private setupPlayerEventListeners(): void {
     if (!this.playerUI) return;
 
+    // Never bind twice (e.g. if init re-runs against an existing player node) —
+    // duplicate handlers would double-fire close/play/drag actions
+    if (this.playerUI.dataset.listenersBound) return;
+    this.playerUI.dataset.listenersBound = 'true';
+
     // Close button
     const closeButton = this.playerUI.querySelector('.close-button');
     closeButton?.addEventListener('click', () => {
@@ -1471,7 +1471,6 @@ class ChatGPTReadAloudController {
     this.currentState.isStreaming = false;
     this.currentState.playbackRate = 1.0;
     this.currentState.isMuted = false;
-    this.currentAudioSrc = null;
   }
 
   private resetToInitialState(): void {
@@ -1482,6 +1481,10 @@ class ChatGPTReadAloudController {
       this.audioPlayer.pause();
       this.audioPlayer.currentTime = 0;
     }
+
+    // Release the previous clip's object URL before a new read-aloud replaces
+    // it — otherwise every back-to-back playback leaks a full audio blob
+    this.cleanupAudioResources();
 
     // Reset all state
     this.resetPlayerState();
@@ -1501,7 +1504,7 @@ class ChatGPTReadAloudController {
       const progressFill = this.playerUI.querySelector('.progress-fill') as HTMLElement;
       const progressHandle = this.playerUI.querySelector('.progress-handle') as HTMLElement;
       if (progressFill) progressFill.style.width = '0%';
-      if (progressHandle) progressHandle.style.right = '100%';
+      if (progressHandle) progressHandle.style.left = '0%';
 
       // Reset play/pause button to play state
       this.updatePlayPauseButton();

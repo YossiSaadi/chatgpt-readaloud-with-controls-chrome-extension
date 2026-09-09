@@ -39,7 +39,13 @@ function silentResponse(): Response {
 }
 
 function createAudioElement(): HTMLAudioElement {
-  document.getElementById(AUDIO_ELEMENT_ID)?.remove();
+  const previous = document.getElementById(AUDIO_ELEMENT_ID) as HTMLAudioElement | null;
+  if (previous) {
+    // Release the previous clip's blob if the content script hasn't already
+    // (e.g. rapid consecutive read-alouds)
+    if (previous.src.startsWith('blob:')) URL.revokeObjectURL(previous.src);
+    previous.remove();
+  }
   const audio = document.createElement('audio');
   audio.id = AUDIO_ELEMENT_ID;
   audio.style.display = 'none';
