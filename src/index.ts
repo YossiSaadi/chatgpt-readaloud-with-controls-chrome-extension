@@ -24,6 +24,13 @@ interface SynthesizeMessage {
   error?: string;
 }
 
+// Set to true for verbose console diagnostics during development; the
+// published build stays quiet (errors still surface via console.error)
+const DEBUG = false;
+function debugLog(...args: unknown[]): void {
+  if (DEBUG) console.log(...args);
+}
+
 // Must match src/interceptor.ts
 const MESSAGE_SOURCE = 'chatgpt-read-aloud-controls';
 const AUDIO_ELEMENT_ID = 'chatgpt-read-aloud-controls-audio';
@@ -64,27 +71,29 @@ class ChatGPTReadAloudController {
   private currentConversationId: string | null = null;
   private pendingRequestId: string | null = null;
   private findAudioAttempts = 0;
+  private findAudioTimeoutId: number | null = null;
   private pollIntervalId: number | null = null;
   private inlineButtonScanQueued = false;
+  private conversationScanQueued = false;
 
   constructor() {
-    console.log('[ChatGPT Read Aloud Controller]: Initializing extension');
-    console.log('[ChatGPT Read Aloud Controller]: Current URL:', window.location.href);
+    debugLog('[ChatGPT Read Aloud Controller]: Initializing extension');
+    debugLog('[ChatGPT Read Aloud Controller]: Current URL:', window.location.href);
     this.setupMessageListener();
     this.observeConversationChanges();
     this.createPlayerUI(); // Player is always present
     this.observeAssistantTurns(); // Inject inline "Listen" buttons
     this.updateCurrentConversationId();
-    console.log('[ChatGPT Read Aloud Controller]: Initialization complete');
+    debugLog('[ChatGPT Read Aloud Controller]: Initialization complete');
   }
 
   private setupMessageListener(): void {
     // Listen for messages posted by the MAIN-world interceptor (src/interceptor.ts)
-    console.log('[ChatGPT Read Aloud Controller]: Setting up message listener');
+    debugLog('[ChatGPT Read Aloud Controller]: Setting up message listener');
     window.addEventListener('message', (event: MessageEvent<SynthesizeMessage>) => {
       if (event.source !== window || event.data?.source !== MESSAGE_SOURCE) return;
       const message = event.data;
-      console.log('[ChatGPT Read Aloud Controller]: Received message:', message.type);
+      debugLog('[ChatGPT Read Aloud Controller]: Received message:', message.type);
 
       switch (message.type) {
         case 'SYNTHESIZE_REQUEST_INTERCEPTED':
@@ -94,18 +103,14 @@ class ChatGPTReadAloudController {
           this.pendingRequestId = message.requestId;
           this.showPlayerDisabled();
           this.findAudioAttempts = 0;
-          setTimeout(() => {
-            this.findAndBindInterceptedAudio();
-          }, 100);
+          this.scheduleFindAudio(100);
           break;
 
         case 'SYNTHESIZE_REQUEST_COMPLETED':
           if (message.requestId === this.pendingRequestId && !this.audioPlayer) {
-            console.log('[ChatGPT Read Aloud Controller]: Synthesis completed, looking for audio');
+            debugLog('[ChatGPT Read Aloud Controller]: Synthesis completed, looking for audio');
             this.findAudioAttempts = 0;
-            setTimeout(() => {
-              this.findAndBindInterceptedAudio();
-            }, 100);
+            this.scheduleFindAudio(100);
           }
           break;
 
@@ -126,25 +131,37 @@ class ChatGPTReadAloudController {
     // same element — a second bind would duplicate the element listeners
     if (targetAudio && this.audioPlayer === targetAudio) return;
 
-    if (!targetAudio || !targetAudio.src) {
+    // The interceptor always produces a blob: URL. Refuse anything else, so a
+    // page script squatting on our element id with an arbitrary remote src
+    // can't get our player bound to it (defense-in-depth; see red-team notes)
+    if (!targetAudio || !targetAudio.src || !targetAudio.src.startsWith('blob:')) {
       this.findAudioAttempts++;
       if (this.findAudioAttempts >= FIND_AUDIO_MAX_ATTEMPTS) {
-        console.log('[ChatGPT Read Aloud Controller]: Gave up waiting for audio element');
+        debugLog('[ChatGPT Read Aloud Controller]: Gave up waiting for audio element');
         this.handleAudioError('Timed out waiting for audio from OpenAI');
         return;
       }
-      setTimeout(() => {
-        this.findAndBindInterceptedAudio();
-      }, 500);
+      this.scheduleFindAudio(500);
       return;
     }
 
-    console.log('[ChatGPT Read Aloud Controller]: Binding to intercepted audio element');
+    debugLog('[ChatGPT Read Aloud Controller]: Binding to intercepted audio element');
     this.hijackAudioElement(targetAudio);
   }
 
+  // Only one pending lookup at a time: a new schedule replaces any prior one,
+  // so repeated messages (or the INTERCEPTED/COMPLETED pair) can never stack
+  // concurrent retry loops
+  private scheduleFindAudio(delayMs: number): void {
+    if (this.findAudioTimeoutId !== null) clearTimeout(this.findAudioTimeoutId);
+    this.findAudioTimeoutId = window.setTimeout(() => {
+      this.findAudioTimeoutId = null;
+      this.findAndBindInterceptedAudio();
+    }, delayMs);
+  }
+
   private hijackAudioElement(originalAudio: HTMLAudioElement): void {
-    console.log('[ChatGPT Read Aloud Controller]: Taking control of ChatGPT audio element');
+    debugLog('[ChatGPT Read Aloud Controller]: Taking control of ChatGPT audio element');
 
     // Store reference to the original audio without modifying it
     this.audioPlayer = originalAudio;
@@ -168,7 +185,7 @@ class ChatGPTReadAloudController {
     }
     this.updatePlayerContent();
 
-    console.log(
+    debugLog(
       '[ChatGPT Read Aloud Controller]: Monitoring audio element with src:',
       this.audioPlayer.src,
     );
@@ -180,7 +197,7 @@ class ChatGPTReadAloudController {
   private setupAudioEventsNonDestructive(): void {
     if (!this.audioPlayer) return;
 
-    console.log('[ChatGPT Read Aloud Controller]: Setting up non-destructive audio monitoring');
+    debugLog('[ChatGPT Read Aloud Controller]: Setting up non-destructive audio monitoring');
 
     // Capture the element these listeners belong to, so a handler firing after
     // a newer read-aloud has replaced the session can't act on the wrong state
@@ -195,14 +212,14 @@ class ChatGPTReadAloudController {
       () => {
         if (this.audioPlayer !== boundAudio) return;
         const duration = this.audioPlayer!.duration;
-        console.log('[ChatGPT Read Aloud Controller]: Audio metadata loaded, duration:', duration);
+        debugLog('[ChatGPT Read Aloud Controller]: Audio metadata loaded, duration:', duration);
         if (duration && isFinite(duration) && duration > 0) {
           this.currentState.duration = duration;
           this.currentState.isLoading = false;
           this.currentState.isStreaming = false;
           this.updateTimeDisplay();
           this.enableDurationDependentControls();
-          console.log('[ChatGPT Read Aloud Controller]: Audio fully loaded, duration:', duration);
+          debugLog('[ChatGPT Read Aloud Controller]: Audio fully loaded, duration:', duration);
         }
       },
       { passive: true },
@@ -214,7 +231,7 @@ class ChatGPTReadAloudController {
         if (this.audioPlayer !== boundAudio) return;
         this.currentState.isPlaying = false;
         this.updatePlayPauseButton();
-        console.log('[ChatGPT Read Aloud Controller]: Audio playback ended');
+        debugLog('[ChatGPT Read Aloud Controller]: Audio playback ended');
         // Auto-hide player when done — unless a newer read-aloud has started
         // in the meantime (stopAudio would revoke the new clip's blob)
         setTimeout(() => {
@@ -232,9 +249,9 @@ class ChatGPTReadAloudController {
       this.currentState.isStreaming = false;
       this.updateTimeDisplay();
       this.enableDurationDependentControls();
-      console.log('[ChatGPT Read Aloud Controller]: Initial duration set to:', duration);
+      debugLog('[ChatGPT Read Aloud Controller]: Initial duration set to:', duration);
     } else {
-      console.log('[ChatGPT Read Aloud Controller]: Initial duration not ready:', duration);
+      debugLog('[ChatGPT Read Aloud Controller]: Initial duration not ready:', duration);
       this.currentState.isLoading = true;
       this.currentState.isStreaming = true;
     }
@@ -270,7 +287,7 @@ class ChatGPTReadAloudController {
 
       if (wasPlaying !== this.currentState.isPlaying) {
         this.updatePlayPauseButton();
-        console.log(
+        debugLog(
           '[ChatGPT Read Aloud Controller]: Audio state changed to:',
           this.currentState.isPlaying ? 'playing' : 'paused',
         );
@@ -284,7 +301,7 @@ class ChatGPTReadAloudController {
         duration > 0 &&
         this.currentState.duration !== duration
       ) {
-        console.log(
+        debugLog(
           '[ChatGPT Read Aloud Controller]: Duration updated from',
           this.currentState.duration,
           'to',
@@ -311,23 +328,30 @@ class ChatGPTReadAloudController {
   private observeConversationChanges(): void {
     // Wait for document.body to be available
     if (!document.body) {
-      console.log(
+      debugLog(
         '[ChatGPT Read Aloud Controller]: Document body not ready for conversation observer, waiting...',
       );
       setTimeout(() => this.observeConversationChanges(), 100);
       return;
     }
 
-    console.log('[ChatGPT Read Aloud Controller]: Setting up conversation change observer');
+    debugLog('[ChatGPT Read Aloud Controller]: Setting up conversation change observer');
 
-    // Observer to detect conversation changes and close player
+    // Observer to detect conversation changes and close player — coalesced to
+    // one check per animation frame so mutation storms (streaming, hydration)
+    // don't run the URL check per batch
     const observer = new MutationObserver(() => {
-      const newConversationId = this.extractConversationId();
-      if (newConversationId && newConversationId !== this.currentConversationId) {
-        console.log('[ChatGPT Read Aloud Controller]: Conversation changed, closing player');
-        this.stopAudio();
-        this.currentConversationId = newConversationId;
-      }
+      if (this.conversationScanQueued) return;
+      this.conversationScanQueued = true;
+      requestAnimationFrame(() => {
+        this.conversationScanQueued = false;
+        const newConversationId = this.extractConversationId();
+        if (newConversationId && newConversationId !== this.currentConversationId) {
+          debugLog('[ChatGPT Read Aloud Controller]: Conversation changed, closing player');
+          this.stopAudio();
+          this.currentConversationId = newConversationId;
+        }
+      });
     });
 
     try {
@@ -335,7 +359,7 @@ class ChatGPTReadAloudController {
         childList: true,
         subtree: true,
       });
-      console.log(
+      debugLog(
         '[ChatGPT Read Aloud Controller]: Conversation change observer started successfully',
       );
     } catch (error) {
@@ -378,7 +402,7 @@ class ChatGPTReadAloudController {
     const observer = new MutationObserver(() => this.queueInlineButtonScan());
     observer.observe(document.body, { childList: true, subtree: true });
     this.scanForAssistantTurns();
-    console.log('[ChatGPT Read Aloud Controller]: Assistant-turn observer started');
+    debugLog('[ChatGPT Read Aloud Controller]: Assistant-turn observer started');
   }
 
   private queueInlineButtonScan(): void {
@@ -435,7 +459,7 @@ class ChatGPTReadAloudController {
     ) as HTMLButtonElement | undefined;
 
     if (!moreButton) {
-      console.log('[ChatGPT Read Aloud Controller]: No "More actions" button on this turn');
+      debugLog('[ChatGPT Read Aloud Controller]: No "More actions" button on this turn');
       return;
     }
 
@@ -455,7 +479,7 @@ class ChatGPTReadAloudController {
           return;
         }
         if (++attempts >= 20) {
-          console.log('[ChatGPT Read Aloud Controller]: Read Aloud menu item never appeared');
+          debugLog('[ChatGPT Read Aloud Controller]: Read Aloud menu item never appeared');
           return;
         }
         setTimeout(findAndClick, 50);
@@ -477,22 +501,29 @@ class ChatGPTReadAloudController {
     // Check if player already exists in DOM
     const existingPlayer = document.getElementById('custom-chatgpt-audio-player');
     if (existingPlayer) {
-      console.log('[ChatGPT Read Aloud Controller]: Player UI already exists, using existing player');
-      this.playerUI = existingPlayer;
-      
-      // Set up event listeners for the existing player
-      this.setupPlayerEventListeners();
-      
-      // Initialize volume display
-      this.updateVolumeDisplay();
-      
-      // Initialize speed selection
-      this.setPlaybackSpeed(1.0);
-      return;
+      // Only adopt a node this extension created — a page script squatting on
+      // our id would otherwise become our player UI (missing children would
+      // then throw in the update methods). Replace anything foreign.
+      if ((existingPlayer as HTMLElement).dataset.raOwned === 'true') {
+        debugLog('[ChatGPT Read Aloud Controller]: Player UI already exists, using existing player');
+        this.playerUI = existingPlayer;
+
+        // Set up event listeners for the existing player
+        this.setupPlayerEventListeners();
+
+        // Initialize volume display
+        this.updateVolumeDisplay();
+
+        // Initialize speed selection
+        this.setPlaybackSpeed(1.0);
+        return;
+      }
+      existingPlayer.remove();
     }
 
     const player = document.createElement('div');
     player.id = 'custom-chatgpt-audio-player';
+    player.dataset.raOwned = 'true';
     player.innerHTML = `
               <div class="player-container" role="region" aria-label="Audio Player Controls">
           <header class="player-header">
@@ -1404,7 +1435,7 @@ class ChatGPTReadAloudController {
     if (this.playerUI) {
       this.playerUI.classList.add('visible');
       this.playerUI.classList.remove('hidden', 'disabled');
-      console.log('[ChatGPT Read Aloud Controller]: Showing player with animation');
+      debugLog('[ChatGPT Read Aloud Controller]: Showing player with animation');
       
       // Focus the play button for accessibility
       this.focusPlayButton();
@@ -1415,7 +1446,7 @@ class ChatGPTReadAloudController {
     if (this.playerUI) {
       this.playerUI.classList.add('visible', 'disabled');
       this.playerUI.classList.remove('hidden');
-      console.log('[ChatGPT Read Aloud Controller]: Showing player disabled with animation');
+      debugLog('[ChatGPT Read Aloud Controller]: Showing player disabled with animation');
 
       // Surface the loading indicator while we wait for the audio
       this.updatePlayerContent();
@@ -1441,14 +1472,14 @@ class ChatGPTReadAloudController {
     if (this.playerUI) {
       this.playerUI.classList.remove('visible');
       this.playerUI.classList.add('hidden');
-      console.log('[ChatGPT Read Aloud Controller]: Hiding player with animation');
+      debugLog('[ChatGPT Read Aloud Controller]: Hiding player with animation');
     }
   }
 
   private togglePlayPause(): void {
     if (!this.audioPlayer) return;
 
-    console.log(
+    debugLog(
       '[ChatGPT Read Aloud Controller]: Toggling play/pause, current state:',
       this.currentState.isPlaying,
     );
@@ -1463,7 +1494,7 @@ class ChatGPTReadAloudController {
   }
 
   private stopAudio(): void {
-    console.log('[ChatGPT Read Aloud Controller]: Stopping audio and resetting player');
+    debugLog('[ChatGPT Read Aloud Controller]: Stopping audio and resetting player');
 
     if (this.audioPlayer) {
       this.audioPlayer.pause();
@@ -1482,7 +1513,7 @@ class ChatGPTReadAloudController {
   }
 
   private resetPlayerState(): void {
-    console.log('[ChatGPT Read Aloud Controller]: Resetting player state to empty');
+    debugLog('[ChatGPT Read Aloud Controller]: Resetting player state to empty');
     this.currentState.isPlaying = false;
     this.currentState.currentTime = 0;
     this.currentState.duration = 0;
@@ -1496,7 +1527,7 @@ class ChatGPTReadAloudController {
   }
 
   private resetToInitialState(): void {
-    console.log('[ChatGPT Read Aloud Controller]: Resetting to initial state');
+    debugLog('[ChatGPT Read Aloud Controller]: Resetting to initial state');
     
     // Stop any existing audio
     if (this.audioPlayer) {
@@ -1562,7 +1593,7 @@ class ChatGPTReadAloudController {
       speedSelector.classList.add('no-duration');
     }
 
-    console.log('[ChatGPT Read Aloud Controller]: Disabled duration-dependent controls');
+    debugLog('[ChatGPT Read Aloud Controller]: Disabled duration-dependent controls');
   }
 
   private enableDurationDependentControls(): void {
@@ -1579,7 +1610,7 @@ class ChatGPTReadAloudController {
       speedSelector.classList.remove('no-duration');
     }
 
-    console.log('[ChatGPT Read Aloud Controller]: Enabled duration-dependent controls');
+    debugLog('[ChatGPT Read Aloud Controller]: Enabled duration-dependent controls');
   }
 
   private cleanupAudioResources(): void {
@@ -1602,7 +1633,7 @@ class ChatGPTReadAloudController {
     // Check if duration is valid before seeking
     const duration = this.audioPlayer.duration;
     if (!duration || !isFinite(duration) || duration <= 0) {
-      console.log('[ChatGPT Read Aloud Controller]: Cannot seek - invalid duration:', duration);
+      debugLog('[ChatGPT Read Aloud Controller]: Cannot seek - invalid duration:', duration);
       return;
     }
 
@@ -1612,7 +1643,7 @@ class ChatGPTReadAloudController {
     const percentage = Math.max(0, Math.min(1, clickX / rect.width)); // Clamp between 0 and 1
     const newTime = percentage * duration;
 
-    console.log(
+    debugLog(
       '[ChatGPT Read Aloud Controller]: Seeking to:',
       newTime,
       'seconds (',
@@ -1678,10 +1709,11 @@ class ChatGPTReadAloudController {
   private updatePlayPauseButton(): void {
     if (!this.playerUI) return;
 
-    const playIcon = this.playerUI.querySelector('.play-icon') as HTMLElement;
-    const pauseIcon = this.playerUI.querySelector('.pause-icon') as HTMLElement;
-    const playPauseButton = this.playerUI.querySelector('.play-pause-button') as HTMLElement;
-    const playbackStatus = this.playerUI.querySelector('#playback-status') as HTMLElement;
+    const playIcon = this.playerUI.querySelector('.play-icon') as HTMLElement | null;
+    const pauseIcon = this.playerUI.querySelector('.pause-icon') as HTMLElement | null;
+    const playPauseButton = this.playerUI.querySelector('.play-pause-button') as HTMLElement | null;
+    const playbackStatus = this.playerUI.querySelector('#playback-status') as HTMLElement | null;
+    if (!playIcon || !pauseIcon || !playPauseButton) return;
 
     if (this.currentState.isPlaying) {
       playIcon.style.display = 'none';
@@ -1709,9 +1741,10 @@ class ChatGPTReadAloudController {
   private updateVolumeDisplay(): void {
     if (!this.playerUI) return;
 
-    const volumeOnIcon = this.playerUI.querySelector('.volume-on-icon') as HTMLElement;
-    const volumeMutedIcon = this.playerUI.querySelector('.volume-muted-icon') as HTMLElement;
-    const volumeInput = this.playerUI.querySelector('.volume-input') as HTMLInputElement;
+    const volumeOnIcon = this.playerUI.querySelector('.volume-on-icon') as HTMLElement | null;
+    const volumeMutedIcon = this.playerUI.querySelector('.volume-muted-icon') as HTMLElement | null;
+    const volumeInput = this.playerUI.querySelector('.volume-input') as HTMLInputElement | null;
+    if (!volumeOnIcon || !volumeMutedIcon) return;
 
     if (this.currentState.isMuted) {
       volumeOnIcon.style.display = 'none';
@@ -1756,7 +1789,7 @@ class ChatGPTReadAloudController {
       speedButton.setAttribute('aria-label', `Current speed: ${speed}x. Click to select different speed`);
     }
 
-    console.log('[ChatGPT Read Aloud Controller]: Playback speed set to:', speed);
+    debugLog('[ChatGPT Read Aloud Controller]: Playback speed set to:', speed);
   }
 
   private skipBackward(): void {
@@ -1764,7 +1797,7 @@ class ChatGPTReadAloudController {
 
     const newTime = Math.max(0, this.audioPlayer.currentTime - 10);
     this.audioPlayer.currentTime = newTime;
-    console.log('[ChatGPT Read Aloud Controller]: Skipped backward 10 seconds to:', newTime);
+    debugLog('[ChatGPT Read Aloud Controller]: Skipped backward 10 seconds to:', newTime);
   }
 
   private skipForward(): void {
@@ -1773,7 +1806,7 @@ class ChatGPTReadAloudController {
     const maxTime = this.audioPlayer.duration || this.currentState.duration;
     const newTime = Math.min(maxTime, this.audioPlayer.currentTime + 10);
     this.audioPlayer.currentTime = newTime;
-    console.log('[ChatGPT Read Aloud Controller]: Skipped forward 10 seconds to:', newTime);
+    debugLog('[ChatGPT Read Aloud Controller]: Skipped forward 10 seconds to:', newTime);
   }
 
   private toggleMute(): void {
@@ -1782,7 +1815,7 @@ class ChatGPTReadAloudController {
     this.currentState.isMuted = !this.currentState.isMuted;
     this.audioPlayer.muted = this.currentState.isMuted;
     this.updateVolumeDisplay();
-    console.log('[ChatGPT Read Aloud Controller]: Toggled mute to:', this.currentState.isMuted);
+    debugLog('[ChatGPT Read Aloud Controller]: Toggled mute to:', this.currentState.isMuted);
   }
 
   private formatTime(seconds: number): string {
@@ -1801,14 +1834,14 @@ function initializeChatGPTReadAloudController(): void {
   if (window.location.hostname === 'chatgpt.com') {
     // Only create one instance
     if (!controllerInstance) {
-      console.log('[ChatGPT Read Aloud Controller]: Initializing on ChatGPT');
-      console.log('[ChatGPT Read Aloud Controller]: Document ready state:', document.readyState);
+      debugLog('[ChatGPT Read Aloud Controller]: Initializing on ChatGPT');
+      debugLog('[ChatGPT Read Aloud Controller]: Document ready state:', document.readyState);
       controllerInstance = new ChatGPTReadAloudController();
     } else {
-      console.log('[ChatGPT Read Aloud Controller]: Controller already exists, skipping initialization');
+      debugLog('[ChatGPT Read Aloud Controller]: Controller already exists, skipping initialization');
     }
   } else {
-    console.log(
+    debugLog(
       '[ChatGPT Read Aloud Controller]: Not on ChatGPT domain, current hostname:',
       window.location.hostname,
     );
@@ -1833,7 +1866,7 @@ function setupNavigationObserver() {
   new MutationObserver(() => {
     if (window.location.href !== currentUrl) {
       currentUrl = window.location.href;
-      console.log('[ChatGPT Read Aloud Controller]: URL changed to:', currentUrl);
+      debugLog('[ChatGPT Read Aloud Controller]: URL changed to:', currentUrl);
       
       // Reset current conversation tracking when navigating
       if (controllerInstance) {
