@@ -122,6 +122,10 @@ class ChatGPTReadAloudController {
     // The interceptor creates a dedicated audio element for the synthesize stream
     const targetAudio = document.getElementById(AUDIO_ELEMENT_ID) as HTMLAudioElement | null;
 
+    // The INTERCEPTED retry loop and the COMPLETED handler can race to bind the
+    // same element — a second bind would duplicate the element listeners
+    if (targetAudio && this.audioPlayer === targetAudio) return;
+
     if (!targetAudio || !targetAudio.src) {
       this.findAudioAttempts++;
       if (this.findAudioAttempts >= FIND_AUDIO_MAX_ATTEMPTS) {
@@ -178,6 +182,10 @@ class ChatGPTReadAloudController {
 
     console.log('[ChatGPT Read Aloud Controller]: Setting up non-destructive audio monitoring');
 
+    // Capture the element these listeners belong to, so a handler firing after
+    // a newer read-aloud has replaced the session can't act on the wrong state
+    const boundAudio = this.audioPlayer;
+
     // Set up a polling mechanism to track audio state
     this.startAudioStatePolling();
 
@@ -185,6 +193,7 @@ class ChatGPTReadAloudController {
     this.audioPlayer.addEventListener(
       'loadedmetadata',
       () => {
+        if (this.audioPlayer !== boundAudio) return;
         const duration = this.audioPlayer!.duration;
         console.log('[ChatGPT Read Aloud Controller]: Audio metadata loaded, duration:', duration);
         if (duration && isFinite(duration) && duration > 0) {
@@ -202,12 +211,14 @@ class ChatGPTReadAloudController {
     this.audioPlayer.addEventListener(
       'ended',
       () => {
+        if (this.audioPlayer !== boundAudio) return;
         this.currentState.isPlaying = false;
         this.updatePlayPauseButton();
         console.log('[ChatGPT Read Aloud Controller]: Audio playback ended');
-        // Auto-hide player when done
+        // Auto-hide player when done — unless a newer read-aloud has started
+        // in the meantime (stopAudio would revoke the new clip's blob)
         setTimeout(() => {
-          this.stopAudio();
+          if (this.audioPlayer === boundAudio) this.stopAudio();
         }, 1000);
       },
       { passive: true },
@@ -428,27 +439,38 @@ class ChatGPTReadAloudController {
       return;
     }
 
-    moreButton.click(); // opens the Radix dropdown
+    const openMenuAndClickReadAloud = (): void => {
+      moreButton.click(); // opens the Radix dropdown
 
-    // The menu item mounts asynchronously; poll briefly for it.
-    let attempts = 0;
-    const findAndClick = (): void => {
-      const menuItem = document.querySelector(
-        `[role="menuitem"]${VOICE_ACTION_SELECTOR.replace('button', '')}`,
-      ) as HTMLElement | null;
-      if (menuItem) {
-        menuItem.click();
-        // Close the menu (Radix leaves it open until focus/escape)
-        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-        return;
-      }
-      if (++attempts >= 20) {
-        console.log('[ChatGPT Read Aloud Controller]: Read Aloud menu item never appeared');
-        return;
-      }
+      // The menu item mounts asynchronously; poll briefly for it.
+      let attempts = 0;
+      const findAndClick = (): void => {
+        const menuItem = document.querySelector(
+          `[role="menuitem"]${VOICE_ACTION_SELECTOR.replace('button', '')}`,
+        ) as HTMLElement | null;
+        if (menuItem) {
+          menuItem.click();
+          // Close the menu (Radix leaves it open until focus/escape)
+          document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+          return;
+        }
+        if (++attempts >= 20) {
+          console.log('[ChatGPT Read Aloud Controller]: Read Aloud menu item never appeared');
+          return;
+        }
+        setTimeout(findAndClick, 50);
+      };
       setTimeout(findAndClick, 50);
     };
-    setTimeout(findAndClick, 50);
+
+    // If some menu is already open — possibly another turn's — close it first,
+    // so our click opens this turn's menu instead of toggling the wrong one
+    if (document.querySelector('[role="menu"]')) {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      setTimeout(openMenuAndClickReadAloud, 50);
+    } else {
+      openMenuAndClickReadAloud();
+    }
   }
 
   private createPlayerUI(): void {
@@ -1363,15 +1385,15 @@ class ChatGPTReadAloudController {
     }
     if (!geometry) return;
 
-    if (typeof geometry.width === 'number') {
-      const clamped = Math.max(PLAYER_MIN_WIDTH, Math.min(geometry.width, PLAYER_MAX_WIDTH));
+    if (Number.isFinite(geometry.width)) {
+      const clamped = Math.max(PLAYER_MIN_WIDTH, Math.min(geometry.width!, PLAYER_MAX_WIDTH));
       this.playerUI.style.width = `${clamped}px`;
     }
-    if (typeof geometry.left === 'number' && typeof geometry.top === 'number') {
+    if (Number.isFinite(geometry.left) && Number.isFinite(geometry.top)) {
       // Clamp to the current viewport in case it shrank since last session
       const width = geometry.width || this.playerUI.getBoundingClientRect().width || 440;
-      const left = Math.max(0, Math.min(geometry.left, Math.max(0, window.innerWidth - width)));
-      const top = Math.max(0, Math.min(geometry.top, Math.max(0, window.innerHeight - 60)));
+      const left = Math.max(0, Math.min(geometry.left!, Math.max(0, window.innerWidth - width)));
+      const top = Math.max(0, Math.min(geometry.top!, Math.max(0, window.innerHeight - 60)));
       this.playerUI.classList.add('positioned');
       this.playerUI.style.left = `${left}px`;
       this.playerUI.style.top = `${top}px`;
