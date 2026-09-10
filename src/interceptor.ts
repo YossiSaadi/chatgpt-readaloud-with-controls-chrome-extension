@@ -69,6 +69,20 @@ async function playResponseAudio(audio: HTMLAudioElement, body: ReadableStream<U
   audio.play().catch(() => {});
 }
 
+// Match on the parsed pathname, not a raw substring — a URL that merely
+// *contains* "/backend-api/synthesize" in a query param or fragment must not
+// be captured (swallowing a non-audio response would corrupt ChatGPT's state).
+function isSynthesizeRequest(rawUrl: string): boolean {
+  try {
+    const url = new URL(rawUrl, window.location.origin);
+    // Same origin only — a page fetch to another host with this pathname must
+    // not be captured
+    return url.origin === window.location.origin && url.pathname === SYNTHESIZE_PATH;
+  } catch {
+    return false;
+  }
+}
+
 const originalFetch = window.fetch;
 window.fetch = async function (
   this: unknown,
@@ -78,7 +92,7 @@ window.fetch = async function (
   const url =
     typeof input === 'string' ? input : input instanceof URL ? input.href : (input?.url ?? '');
 
-  if (!url.includes(SYNTHESIZE_PATH)) {
+  if (!isSynthesizeRequest(url)) {
     return originalFetch.call(this, input, init);
   }
 
@@ -96,6 +110,16 @@ window.fetch = async function (
   if (!response.ok || !response.body) {
     postToContentScript('SYNTHESIZE_REQUEST_FAILED', requestId, url, {
       error: `HTTP ${response.status}`,
+    });
+    return response;
+  }
+
+  // Only substitute the silent clip for a genuine audio response — anything
+  // else passes through untouched so ChatGPT's own handling is never broken
+  const contentType = (response.headers.get('content-type') ?? '').toLowerCase();
+  if (!contentType.startsWith('audio/')) {
+    postToContentScript('SYNTHESIZE_REQUEST_FAILED', requestId, url, {
+      error: `Unexpected content-type: ${contentType || '(none)'}`,
     });
     return response;
   }

@@ -12,7 +12,8 @@
     "clean": "rm -rf dist",
     "build": "yarn clean && vite build",
     "build:zip": "yarn build && zip -r chatgpt-readaloud-with-controls-chrome-extension.zip dist",
-    "lint": "eslint src/**/*.ts"
+    "lint": "eslint src/**/*.ts",
+    "type-check": "tsc --noEmit"
   },
   "keywords": ["chrome-extension", "chatgpt", "audio", "read-aloud", "controls"],
   "author": "YossiSaadi",

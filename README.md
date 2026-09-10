@@ -17,15 +17,16 @@ A Chrome extension that enhances ChatGPT's read-aloud feature with a custom audi
 
 - **Play/Pause**: Large, prominent button with visual state changes
 - **Skip Controls**: -10/+10 second buttons for precise navigation
-- **Speed Control**: Hover dropdown with 1.0x, 1.25x, 1.5x, 1.75x, 2.0x options
+- **Speed Control**: Hover dropdown with 0.25x–2.0x options
 - **Progress Bar**: Click-to-seek with real-time position updates
 - **Volume Control**: Native slider with mute toggle button
+- **One-Click "Listen" Button**: Injected into every assistant message's action bar, so you don't have to open ChatGPT's "More actions" menu
+- **Movable & Resizable Player**: Drag it by its header, resize it from the corner — position and size are remembered
 
 ### 🎯 **Intelligent Integration**
 
-- **Background Interception**: Uses `chrome.webRequest` API to capture audio requests
-- **Non-Destructive Hijacking**: Takes control of ChatGPT's audio without breaking it
-- **Native Button Management**: Disables ChatGPT's stop button during custom playback
+- **In-Page Audio Capture**: Observes the audio request ChatGPT's own page makes for read-aloud and plays it through the extension's player — no extra permissions needed
+- **No Double Audio**: ChatGPT's own playback ends immediately while the extension's player takes over
 - **Auto-Reset**: Completely resets player state when switching between different audio
 
 ### 🚀 **Smart Control Management**
@@ -145,8 +146,8 @@ yarn type-check   # Run TypeScript type checking
 
 ```
 ├── src/
-│   ├── index.ts           # Main content script with audio player
-│   └── background.ts      # Service worker for request interception
+│   ├── index.ts           # Content script: player UI, inline Listen button
+│   └── interceptor.ts     # MAIN-world script: captures the read-aloud audio
 ├── public/
 │   └── icons/            # Extension icons (16, 32, 48, 128px)
 ├── manifest.json         # Chrome extension manifest (V3)
@@ -158,29 +159,33 @@ yarn type-check   # Run TypeScript type checking
 
 ### Architecture
 
+#### **MAIN-World Interceptor (`src/interceptor.ts`)**
+
+Runs in the page's MAIN world at `document_start` and patches `window.fetch`. When ChatGPT requests `/backend-api/synthesize` (its read-aloud audio), the interceptor:
+
+- Buffers the real `audio/aac` response into a Blob and plays it through a hidden `<audio>` element the player UI controls
+- Hands ChatGPT's own code a ~0.2s silent clip so its native playback ends immediately — no double audio, and ChatGPT's UI resets cleanly
+- Notifies the content script via `window.postMessage` (request started / completed / failed)
+
+This replaced the old `<audio>`-element hijacking (ChatGPT now decodes read-aloud with Web Audio, so there is no element to hijack) and the old `webRequest` background worker (no longer needed — the extension has no background script and no `webRequest` permission).
+
 #### **Content Script (`src/index.ts`)**
 
 - **ChatGPTReadAloudController**: Main class managing the entire player lifecycle
-- **Request Interception**: Listens for synthesize API calls from background script
-- **DOM Management**: Creates and manages the floating player UI
-- **Audio Control**: Non-destructive hijacking of ChatGPT's audio elements
-- **State Management**: Comprehensive state tracking and cleanup
-
-#### **Background Script (`src/background.ts`)**
-
-- **webRequest API**: Intercepts synthesize requests to capture audio URLs
-- **Message Passing**: Communicates audio data to content script
-- **Request Handling**: Monitors request lifecycle (start, complete, error)
+- **Player UI**: Creates and manages the floating, draggable, resizable player
+- **Inline "Listen" Button**: Injects a one-click button into each assistant message's action bar (it drives ChatGPT's native Read Aloud menu item)
+- **Audio Binding**: Binds playback controls to the interceptor's audio element
+- **State Management**: Comprehensive state tracking, cleanup, and blob-URL lifecycle
 
 #### **Key Classes and Methods**
 
 **ChatGPTReadAloudController**:
 
 - `constructor()`: Initializes observers and creates player UI
-- `setupReadAloudObserver()`: Monitors for new read-aloud buttons
-- `hijackAudioElement()`: Takes control of ChatGPT's audio
+- `findAndBindInterceptedAudio()`: Locates the interceptor's audio element and binds to it
+- `observeAssistantTurns()`: Injects the inline Listen button into new messages
 - `resetToInitialState()`: Completely resets player between sessions
-- `focusPlayButton()`: Manages accessibility focus
+- `makePlayerDraggable()`/`makePlayerResizable()`: Window management with persisted geometry
 - `showPlayer()`/`showPlayerDisabled()`: Controls player visibility and state
 
 ## 🎨 **Design Philosophy**
@@ -201,51 +206,25 @@ yarn type-check   # Run TypeScript type checking
 
 ## 🔒 **Privacy & Security**
 
-### **Why Does This Extension Need webRequest Permission?**
+### **How Does the Extension Capture the Audio? (No Extra Permissions)**
 
-This extension uses the `webRequest` permission for a **very specific and limited purpose**: to detect when ChatGPT starts generating audio for the read-aloud feature.
-
-**Here's exactly what it does:**
-
-- **Monitors only audio synthesis requests** to `https://chatgpt.com/backend-api/synthesize*`
-- **Detects when audio generation starts** so the player can appear immediately
-- **Tracks request completion** to know when audio is ready for playback
-- **Handles errors gracefully** if audio generation fails
+The extension holds **no API permissions at all** — only host access to `chatgpt.com`. Audio is captured entirely inside the ChatGPT tab: a small script observes the request ChatGPT's own page makes to `https://chatgpt.com/backend-api/synthesize` (its read-aloud audio), buffers that audio locally, and plays it through the extension's player. ChatGPT's own playback is replaced with a fraction of a second of silence so you never hear two copies at once.
 
 **What it does NOT do:**
 
 - ❌ **Does not read or store conversation content**
 - ❌ **Does not access authentication tokens or login data**
-- ❌ **Does not modify or intercept any other ChatGPT requests**
+- ❌ **Does not modify or intercept any other ChatGPT requests** (only requests whose path is exactly `/backend-api/synthesize`, and only when they return audio)
 - ❌ **Does not send any data to external servers**
 - ❌ **Does not track or monitor your browsing**
 
-**Why is this approach necessary?**
-ChatGPT doesn't provide a public API for extensions to know when audio is being generated. The only way to provide instant player response (appearing immediately when you click read-aloud) is to detect the underlying audio request. Without this permission, the extension would have to constantly check for audio elements, causing performance issues and delayed responses.
-
-**Alternative approaches considered:**
-
-- **DOM polling**: Would be slow and resource-intensive
-- **Audio element detection**: Would cause delays and inconsistent behavior
-- **Manual activation**: Would require extra user steps and poor UX
-
 ### **Security Guarantees**
 
-- **No Data Collection**: Extension doesn't collect or store any personal data
-- **Local Processing**: All audio control happens locally in your browser
-- **Scoped Permissions**: Only monitors specific audio-related requests, not general browsing
+- **No Data Collection**: Extension doesn't collect any personal data; the only thing it stores is the player's on-screen position/size in your browser's `localStorage` (numbers only, never leaves your browser)
+- **Local Processing**: All audio capture and control happens locally in your browser tab
+- **Minimal Permissions**: No background worker, no `webRequest`, no `storage`, no `tabs` — only chatgpt.com host access
 - **Open Source**: Code is fully auditable - you can verify exactly what it does
 - **No External Communication**: Extension never sends data outside your browser
-
-### **Technical Transparency**
-
-The webRequest permission is used in only three specific listeners in `background.ts`:
-
-1. `onBeforeRequest` - Detects audio synthesis start
-2. `onCompleted` - Detects successful audio generation
-3. `onErrorOccurred` - Handles audio generation failures
-
-You can review the complete implementation in the source code to verify these claims.
 
 ### **Why Does This Extension Need Host Permission for ChatGPT.com?**
 
