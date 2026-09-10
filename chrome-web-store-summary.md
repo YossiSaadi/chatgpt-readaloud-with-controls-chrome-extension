@@ -15,9 +15,11 @@ Replace ChatGPT's basic audio with a beautiful, fully-featured player that gives
 **🎵 Enhanced Audio Player**
 • Floating interface with instant loading
 • Play/pause, -10/+10 skip controls
-• Variable speed (1.0x to 2.0x)
+• Variable speed (0.25x to 2.0x)
 • Click-to-seek progress bar
 • Volume control with mute
+• One-click "Listen" button on every message
+• Movable & resizable player that remembers its position
 
 **🔒 Privacy First**
 • No data collection - runs locally
@@ -48,6 +50,6 @@ Productivity
 ## Screenshots Descriptions
 
 1. **Main Interface**: Shows the floating audio player with all controls visible during ChatGPT read-aloud
-2. **Speed Control**: Demonstrates the hover dropdown with speed options (1.0x - 2.0x)
+2. **Speed Control**: Demonstrates the hover dropdown with speed options (0.25x - 2.0x)
 3. **Controls**: Shows all available player controls and features
 4. **Integration**: Shows how the player integrates seamlessly with ChatGPT's interface
