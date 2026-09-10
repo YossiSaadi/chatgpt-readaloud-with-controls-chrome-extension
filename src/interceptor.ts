@@ -74,7 +74,10 @@ async function playResponseAudio(audio: HTMLAudioElement, body: ReadableStream<U
 // be captured (swallowing a non-audio response would corrupt ChatGPT's state).
 function isSynthesizeRequest(rawUrl: string): boolean {
   try {
-    return new URL(rawUrl, window.location.origin).pathname === SYNTHESIZE_PATH;
+    const url = new URL(rawUrl, window.location.origin);
+    // Same origin only — a page fetch to another host with this pathname must
+    // not be captured
+    return url.origin === window.location.origin && url.pathname === SYNTHESIZE_PATH;
   } catch {
     return false;
   }
@@ -113,7 +116,7 @@ window.fetch = async function (
 
   // Only substitute the silent clip for a genuine audio response — anything
   // else passes through untouched so ChatGPT's own handling is never broken
-  const contentType = response.headers.get('content-type') ?? '';
+  const contentType = (response.headers.get('content-type') ?? '').toLowerCase();
   if (!contentType.startsWith('audio/')) {
     postToContentScript('SYNTHESIZE_REQUEST_FAILED', requestId, url, {
       error: `Unexpected content-type: ${contentType || '(none)'}`,
